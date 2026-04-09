@@ -426,9 +426,25 @@
     );
     if (!conceptRegex.test(rdf)) return;
     const newRdf = rdf.replace(conceptRegex, (_, body, closing) => {
-      return `${body}    <skos:altLabel>${escapeXml(text)}</skos:altLabel>\n  ${closing}`;
+      // 들여쓰기 감지: 기존 altLabel 또는 prefLabel에서 추출
+      const indentMatch = body.match(/\n([ \t]+)<skos:altLabel/) || body.match(/\n([ \t]+)<skos:prefLabel/);
+      const indent = indentMatch ? indentMatch[1] : '    ';
+      // 기존 altLabel 뒤에 삽입, 없으면 prefLabel 뒤에 삽입
+      const lastAlt = body.lastIndexOf('</skos:altLabel>');
+      if (lastAlt !== -1) {
+        const pos = lastAlt + '</skos:altLabel>'.length;
+        return body.slice(0, pos) + `\n${indent}<skos:altLabel>${escapeXml(text)}</skos:altLabel>` + body.slice(pos) + closing;
+      }
+      const lastPref = body.lastIndexOf('</skos:prefLabel>');
+      if (lastPref !== -1) {
+        const pos = lastPref + '</skos:prefLabel>'.length;
+        return body.slice(0, pos) + `\n${indent}<skos:altLabel>${escapeXml(text)}</skos:altLabel>` + body.slice(pos) + closing;
+      }
+      return `${body}${indent}<skos:altLabel>${escapeXml(text)}</skos:altLabel>\n  ${closing}`;
     });
+    const scrollInfo = editor.getScrollInfo();
     editor.setValue(newRdf);
+    editor.scrollTo(scrollInfo.left, scrollInfo.top);
     const concept = findConceptByAbout(parseCurrentXml(), about);
     if (concept) renderLabelTags(about, concept);
   }
@@ -442,7 +458,9 @@
     );
     if (!lineRegex.test(rdf)) return;
     const newRdf = rdf.replace(lineRegex, (_, before) => before);
+    const scrollInfo = editor.getScrollInfo();
     editor.setValue(newRdf);
+    editor.scrollTo(scrollInfo.left, scrollInfo.top);
     const concept = findConceptByAbout(parseCurrentXml(), about);
     if (concept) renderLabelTags(about, concept);
   }

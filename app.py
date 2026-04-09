@@ -51,7 +51,8 @@ def convert():
 
     os.makedirs(Config.SAVEFILE_DIR, exist_ok=True)
     stem = os.path.splitext(f.filename)[0]
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    KST = datetime.timezone(datetime.timedelta(hours=9))
+    ts = datetime.datetime.now(KST).strftime("%Y%m%d_%H%M%S")
     save_name = f"{stem}_{ts}.rdf"
     save_path = os.path.join(Config.SAVEFILE_DIR, save_name)
     with open(save_path, "w", encoding="utf-8") as out:
@@ -92,7 +93,8 @@ def save():
     else:
         stem = data.get("stem", "ontology").strip() or "ontology"
         stem = "".join(c for c in stem if c.isalnum() or c in "-_")[:80]
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        KST = datetime.timezone(datetime.timedelta(hours=9))
+        ts = datetime.datetime.now(KST).strftime("%Y%m%d_%H%M%S")
         save_name = f"{stem}_{ts}.rdf"
 
     os.makedirs(Config.SAVEFILE_DIR, exist_ok=True)
