@@ -454,7 +454,7 @@
     const escapedAbout = about.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const escapedText  = escapeXml(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const lineRegex = new RegExp(
-      `(rdf:about="${escapedAbout}"[\\s\\S]*?)[ \\t]*<skos:altLabel>${escapedText}</skos:altLabel>\\r?\\n`
+      `(rdf:about="${escapedAbout}"[\\s\\S]*?)[ \\t]*<skos:altLabel(?:\\s[^>]*)?>` + escapedText + `</skos:altLabel>\\r?\\n`
     );
     if (!lineRegex.test(rdf)) return;
     const newRdf = rdf.replace(lineRegex, (_, before) => before);
