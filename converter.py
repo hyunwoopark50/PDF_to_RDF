@@ -171,7 +171,14 @@ OUTPUT RULES
      xmlns:meta="http://example.org/meta#">
 3. Create one skos:ConceptScheme as the root container with a name derived from the document title.
 4. For every concept, create a skos:Concept with:
-   - rdf:about using the cbnu: namespace (CamelCase English, no spaces, e.g. cbnu:AlienRegistrationCard, cbnu:StudentVisa)
+   - rdf:about using the cbnu: prefix shorthand (CamelCase English, no spaces)
+     CORRECT:   rdf:about="cbnu:AlienRegistrationCard"
+     CORRECT:   rdf:resource="cbnu:행정절차"
+     CORRECT:   skos:inScheme rdf:resource="cbnu:GuideScheme"
+     WRONG:     rdf:about="http://cbnu.ac.kr/ontology#AlienRegistrationCard"
+     WRONG:     rdf:resource="http://cbnu.ac.kr/ontology#행정절차"
+     CRITICAL: NEVER expand the cbnu: prefix to its full URI in ANY attribute value.
+     This applies to ALL rdf:about, rdf:resource, skos:inScheme, skos:broader, skos:narrower, skos:related attributes.
    - skos:prefLabel — the canonical NOUN or noun phrase name of the concept in the document's primary language with appropriate xml:lang.
      Must be a name, not an action or procedure. Bad: "학생증 발급" (action). Good: "학생증" (the thing itself).
    - skos:altLabel — one tag per variant, minimum 6 entries, include cross-language variants (see RULE 3)
