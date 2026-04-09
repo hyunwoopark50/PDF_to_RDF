@@ -1,0 +1,393 @@
+import fitz  # pymupdf
+from openai import OpenAI
+from config import Config
+
+client = OpenAI(api_key=Config.OPENAI_API_KEY)
+
+# ── Pass 1: 개념 추출 프롬프트 ─────────────────────────────────────────────────
+
+EXTRACTION_SYSTEM_PROMPT = """You are a concept extractor specializing in document analysis.
+Your sole task is to read a document and list every specific named concept
+that a user might search for when asking questions about this document.
+
+OUTPUT FORMAT:
+- One concept per line
+- No XML, no JSON, no numbers, no bullet points, no explanation
+- No preamble, no closing remarks — just the list
+
+INCLUDE these types (only if actually present in the document):
+  - Organization / office names
+  - Online portals and information systems (URLs, system names)
+  - Specific document names (certificates, forms, cards)
+  - Exam and language test names
+  - Program and service names
+  - Financial items (fees, scholarships, insurance types)
+  - Visa types and legal statuses
+  - Academic policies and events (warnings, leave, graduation)
+  - Procedures with a named outcome (registration, extension)
+
+EXCLUDE these types:
+  - Section or chapter headings (e.g. "안내", "개요", "절차", "소개")
+  - Generic verbs or actions ("신청하다", "제출하다")
+  - Adjectives or qualitative descriptions
+
+QUANTITY:
+  A typical guidebook yields 40–60 concepts.
+  More is always better than fewer.
+  If you find 70+, list them all."""
+
+# ── Pass 2: RDF 변환 프롬프트 ──────────────────────────────────────────────────
+
+CONVERSION_SYSTEM_PROMPT = """You are an expert knowledge engineer specializing in SKOS (Simple Knowledge Organization System) and RDF.
+Your task is to convert a confirmed concept list into a SKOS keyword mapping ontology in RDF/XML format.
+
+PURPOSE: This ontology will be used for entity resolution and keyword expansion in a guideline-based RAG system.
+The ontology must answer one critical question per concept:
+  "What are ALL the ways a user might refer to this concept in a question?" → skos:altLabel (exhaustive)
+
+═══════════════════════════════════════
+RULE 1 — INSTITUTIONAL HIERARCHY FIRST
+═══════════════════════════════════════
+Always begin with a top-level institutional concept hierarchy derived from the document.
+Identify: the issuing organization → sub-organization → support center (if present).
+These become the root concepts that all other concepts are linked under via skos:broader.
+Example structure:
+  충북대학교 → 국제교류본부 → 유학생지원센터 → (grouping nodes) → (leaf concepts)
+
+═══════════════════════════════════════
+RULE 1-B — THEMATIC GROUPING (INDUCTIVE)
+═══════════════════════════════════════
+After the institutional hierarchy, examine the CONFIRMED CONCEPT LIST and group
+concepts into thematic clusters by asking: "Which of these naturally belong together?"
+
+HOW TO FIND CLUSTERS:
+  Look at the concept list and identify natural groupings.
+  Use the following names EXACTLY when the corresponding cluster exists in the document.
+  Do NOT use section heading style names like "학사 안내", "생활 안내", "체류 및 출입국 업무 안내":
+    - 행정절차 — use this name if concepts relate to visa, registration, address change, part-time work
+    - 보험 — use this name if concepts relate to insurance types
+    - 학사 — use this name if concepts relate to courses, grades, graduation, certificates, student ID
+    - 생활 — use this name if concepts relate to housing, student programs, associations
+    - 포털/시스템 — use this name if concepts relate to online platforms, information systems
+  If the document contains a cluster not listed above, name it with a short noun (e.g. "장학금", "취업").
+  Do NOT invent a cluster that has no corresponding concepts in the confirmed list.
+
+RULES FOR GROUPING NODES (MANDATORY — skipping this is a critical error):
+  - You MUST create a skos:Concept grouping node for EACH cluster you identify
+  - A flat structure where all concepts point directly to the institutional node is WRONG
+  - Do NOT create a grouping node if fewer than 2 concepts belong to it
+  - Each grouping node: skos:broader → institutional parent above it
+  - Each member concept: skos:broader → its grouping node
+  - Grouping nodes themselves need altLabels (minimum 4) like any other concept
+
+═══════════════════════════════════════
+RULE 2 — CONVERT EVERY CONCEPT — NO SKIPPING
+═══════════════════════════════════════
+The concept list provided has been pre-confirmed from the document.
+EVERY concept in the list MUST appear as a skos:Concept entry.
+Skipping any concept is a critical error.
+
+For each concept, determine its correct grouping node parent based on RULE 1-B.
+If a concept does not fit any cluster, attach it directly under the nearest institutional node.
+
+═══════════════════════════════════════
+RULE 3 — altLabel: MINIMUM 6, TARGET 8–10
+═══════════════════════════════════════
+Every concept MUST have at least 6 skos:altLabel entries. Target 8–10.
+
+CRITICAL — altLabel must be alternative NAMES or TERMS, never procedural descriptions.
+  Bad altLabels (procedural — do NOT use):
+    "학생증 발급 절차", "수강신청 방법", "등록 신청 서류", "how to apply"
+  Good altLabels (names/synonyms/question keywords):
+    "학생증", "농협카드", "공카드", "NH Bank card", "학생 신분증"
+
+Include ALL of the following variant types:
+  1. Official full name (if different from prefLabel)
+  2. Abbreviated/shortened form (e.g. 외등증, ARC, ID card)
+  3. Colloquial/informal name (e.g. 건보, "health card")
+  4. Cross-language equivalent (Korean ↔ English)
+  5. Abbreviation or acronym in either language
+  6. Related administrative term
+  7. Common question-form keyword a user would type (e.g. "보험료", "비자 연장")
+  8. Any other surface form a user might type
+
+SELF-CHECK before closing each skos:Concept:
+  Count your altLabel entries. If fewer than 6 — add more before proceeding.
+  If any altLabel describes a procedure or action — replace with a noun/name form.
+
+═══════════════════════════════════════
+RULE 4 — meta:source IS ALWAYS "guidelines"
+═══════════════════════════════════════
+Set <meta:source>guidelines</meta:source> on every concept without exception.
+This tool converts guideline documents, so all content routes to the guidelines source.
+
+═══════════════════════════════════════
+RULE 5 — LANGUAGE DETECTION
+═══════════════════════════════════════
+Detect the primary language of the document before generating output.
+- If the document is primarily Korean: use xml:lang="ko" for prefLabel; add English variants as altLabel
+- If the document is primarily English: use xml:lang="en" for prefLabel; add Korean variants as altLabel where natural
+- If the document is bilingual: use the dominant language for prefLabel, the other for cross-language altLabel
+- For rdf:about CamelCase IDs: use English transliteration for Korean concepts (e.g. doc:AlienRegistrationCard),
+  or direct English for English concepts (e.g. doc:StudentVisa)
+- Always include both-language variants in altLabel regardless of document language
+
+═══════════════════════════════════════
+RULE 6 — COMPLETENESS SELF-CHECK
+═══════════════════════════════════════
+Before closing </rdf:RDF>, verify ALL of the following:
+  1. Every concept in the provided concept list has a skos:Concept entry
+     → If missing: add it now before closing
+  2. Every skos:Concept has at least 6 skos:altLabel entries
+     → If under 6: add more now
+  3. Every skos:Concept (except the top-most institutional concept) has skos:broader
+     → If missing: assign the correct parent now
+     → Leaf concepts must point to a grouping node, not directly to the top-most concept
+     → Grouping nodes must point to the institutional parent (e.g. 유학생지원센터 or 충북대학교 국제교류본부)
+     → A concept with no skos:broader is a critical structural error — fix it before closing
+  4. No altLabel describes a procedure — only names and synonyms
+     → If found: replace with noun form
+
+═══════════════════════════════════════
+OUTPUT RULES
+═══════════════════════════════════════
+1. Output ONLY valid RDF/XML. No explanation, no markdown fences, no prose.
+   NEVER write placeholder comments such as:
+     "<!-- Additional concepts follow the same pattern -->"
+     "<!-- ... more concepts ... -->"
+     "<!-- remaining concepts omitted for brevity -->"
+   Every concept MUST be written out in full. There are no shortcuts.
+2. Always start with exactly this XML declaration and root element:
+   <?xml version="1.0" encoding="UTF-8"?>
+   <rdf:RDF
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:skos="http://www.w3.org/2004/02/skos/core#"
+     xmlns:doc="http://example.org/ontology#"
+     xmlns:meta="http://example.org/meta#">
+3. Create one skos:ConceptScheme as the root container with a name derived from the document title.
+4. For every concept, create a skos:Concept with:
+   - rdf:about using the doc: namespace (CamelCase English, no spaces, e.g. doc:AlienRegistrationCard, doc:StudentVisa)
+   - skos:prefLabel — the canonical NOUN or noun phrase name of the concept in the document's primary language with appropriate xml:lang.
+     Must be a name, not an action or procedure. Bad: "학생증 발급" (action). Good: "학생증" (the thing itself).
+   - skos:altLabel — one tag per variant, minimum 6 entries, include cross-language variants (see RULE 3)
+   - meta:source — always "guidelines" (see RULE 4)
+   - skos:broader — parent concept IRI (omit only for the top-most institutional concept)
+   - skos:narrower — child concept IRIs (bidirectional with skos:broader)
+   - skos:related — non-hierarchical associations where meaningful
+   - skos:inScheme — the ConceptScheme IRI
+   - Do NOT include skos:definition
+5. Before each PARENT concept, insert a section-header comment:
+   <!-- ═══════════════════════════════════════
+        [ParentConcept prefLabel] 계층 / Hierarchy
+        [ParentConcept] > [Child1]
+                        > [Child2]
+   ═══════════════════════════════════════ -->
+   - Use the prefLabel language (Korean or English) in comments
+   - Align ">" characters vertically
+   - Only on parent concepts, not leaf concepts
+6. Do not fabricate information not present in the document.
+7. Close with </rdf:RDF>."""
+
+
+def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as e:
+        raise ValueError(f"Could not open PDF: {e}")
+
+    if doc.is_encrypted:
+        raise ValueError("PDF is encrypted/password-protected and cannot be processed.")
+
+    pages = []
+    for page in doc:
+        pages.append(page.get_text("text"))
+    doc.close()
+
+    full_text = "\n\n--- PAGE BREAK ---\n\n".join(pages).strip()
+    if not full_text:
+        raise ValueError(
+            "No extractable text found. The PDF may be image-only (scanned)."
+        )
+
+    if len(full_text) > Config.MAX_TEXT_CHARS:
+        full_text = (
+            full_text[: Config.MAX_TEXT_CHARS]
+            + "\n[TEXT TRUNCATED TO FIT CONTEXT WINDOW]"
+        )
+
+    return full_text
+
+
+def clean_rdf_output(raw: str) -> str:
+    """Strip markdown fences from a complete RDF output."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        if lines[-1].strip() == "```":
+            lines = lines[1:-1]
+        elif lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        raw = "\n".join(lines)
+    return raw.strip()
+
+
+def _strip_chunk(chunk: str) -> str:
+    """Strip markdown fences and trailing </rdf:RDF> from a continuation chunk."""
+    chunk = chunk.strip()
+    # Remove markdown fences
+    if chunk.startswith("```"):
+        lines = chunk.split("\n")
+        if lines[-1].strip() == "```":
+            lines = lines[1:-1]
+        elif lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        chunk = "\n".join(lines).strip()
+    # Remove trailing </rdf:RDF> so we can append more chunks
+    closing = "</rdf:RDF>"
+    if chunk.endswith(closing):
+        chunk = chunk[: -len(closing)].rstrip()
+    return chunk
+
+
+# ── Pass 1: 개념 추출 ──────────────────────────────────────────────────────────
+
+def extract_concepts(text: str) -> list[str]:
+    try:
+        response = client.chat.completions.create(
+            model=Config.GPT_MODEL,
+            messages=[
+                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": (
+                    f"Document text:\n---\n{text}\n---\n\n"
+                    "Extract all searchable concepts from this document."
+                )},
+            ],
+            temperature=0.1,
+            max_tokens=1500,
+        )
+    except Exception as e:
+        raise RuntimeError(f"GPT API call failed (Pass 1): {e}")
+
+    raw = response.choices[0].message.content.strip()
+
+    concepts = []
+    seen = set()
+    for line in raw.splitlines():
+        concept = line.strip().lstrip("-•·").strip()
+        if concept and concept not in seen:
+            concepts.append(concept)
+            seen.add(concept)
+
+    return concepts
+
+
+# ── Pass 2: RDF 생성 ───────────────────────────────────────────────────────────
+
+def convert_to_rdf(pdf_bytes: bytes) -> str:
+    text = extract_text_from_pdf(pdf_bytes)
+
+    # Pass 1: 개념 목록 추출
+    concepts = extract_concepts(text)
+    if not concepts:
+        raise RuntimeError("Pass 1 returned no concepts. PDF may be too short or unreadable.")
+    if len(concepts) < 15:
+        print(f"[Warning] Pass 1 returned only {len(concepts)} concepts. Output may be incomplete.")
+
+    concept_list_str = "\n".join(f"- {c}" for c in concepts)
+
+    # Pass 2: 확정 목록 기반 RDF 생성 (토큰 한계 시 자동 이어쓰기)
+    user_message = (
+        "Convert the following document text into a SKOS knowledge graph in RDF/XML format.\n"
+        "Follow the rules exactly.\n\n"
+        f"Document text:\n---\n{text}\n---\n\n"
+        f"Confirmed concept list (every item below MUST appear as a skos:Concept):\n"
+        f"{concept_list_str}"
+    )
+
+    messages = [
+        {"role": "system", "content": CONVERSION_SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+
+    full_rdf = ""
+    max_continuations = 4
+
+    for attempt in range(max_continuations + 1):
+        try:
+            response = client.chat.completions.create(
+                model=Config.GPT_MODEL,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=16000,
+            )
+        except Exception as e:
+            raise RuntimeError(f"GPT API call failed (Pass 2, attempt {attempt + 1}): {e}")
+
+        chunk = response.choices[0].message.content
+        finish_reason = response.choices[0].finish_reason
+
+        # GPT가 placeholder 주석으로 나머지를 생략했는지 감지
+        placeholder_patterns = [
+            "follow the same pattern",
+            "following the same pattern",
+            "omitted for brevity",
+            "additional concepts",
+            "remaining concepts",
+            "... more concepts",
+            "would follow",
+        ]
+        has_placeholder = any(p in chunk.lower() for p in placeholder_patterns)
+
+        if finish_reason != "length" and not has_placeholder:
+            # 정상 완료: 마크다운 펜스만 제거하고 그대로 붙임
+            # attempt > 0이면 full_rdf 중간에 붙는 것이므로 chunk 단위로 제거
+            full_rdf += clean_rdf_output(chunk) if attempt > 0 else chunk
+            break
+
+        # 이어쓰기가 필요한 경우: </rdf:RDF>와 마크다운 펜스를 제거하고 붙임
+        full_rdf += _strip_chunk(chunk)
+
+        if attempt == max_continuations:
+            full_rdf += "\n</rdf:RDF>"
+            print(f"[Warning] RDF generation did not complete after {max_continuations + 1} passes. Output may be incomplete.")
+            break
+
+        # 이어쓰기 요청
+        messages.append({"role": "assistant", "content": chunk})
+        if has_placeholder:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You used a placeholder comment instead of writing all concepts. "
+                    "This is not allowed. Write out EVERY remaining concept from the confirmed list "
+                    "as a full skos:Concept entry. Do not use comments like 'follow the same pattern'. "
+                    "Continue from the last complete skos:Concept and close with </rdf:RDF> only after all are written."
+                ),
+            })
+        else:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "The output was cut off. Continue the RDF/XML exactly from where you left off. "
+                    "Do not repeat any skos:Concept entries already written. "
+                    "CRITICAL: Maintain the EXACT same hierarchy already established. "
+                    "Every leaf concept must use skos:broader pointing to the correct thematic grouping node "
+                    "(e.g. doc:행정절차, doc:학사, doc:생활, doc:보험, doc:포털시스템), "
+                    "NOT directly to the institutional node (e.g. 유학생지원센터). "
+                    "Do not change any broader assignments already written. "
+                    "Continue until ALL concepts in the confirmed list have been written, "
+                    "then close with </rdf:RDF>."
+                ),
+            })
+
+    return clean_rdf_output(full_rdf)
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python converter.py <path_to_pdf>")
+        sys.exit(1)
+    with open(sys.argv[1], "rb") as f:
+        print(convert_to_rdf(f.read()))

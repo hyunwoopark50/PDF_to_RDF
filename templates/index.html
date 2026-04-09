@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF to SKOS Ontology Converter</title>
+
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/monokai.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div id="app">
+
+    <!-- Upload Section -->
+    <section id="upload-section">
+      <div class="header">
+        <h1>PDF to SKOS Ontology Converter</h1>
+        <p class="subtitle">Upload a PDF and GPT will generate a SKOS keyword mapping ontology in RDF/XML format</p>
+      </div>
+
+      <form id="upload-form">
+        <div id="drop-zone" class="drop-zone">
+          <input type="file" id="pdf-input" name="pdf_file" accept=".pdf" hidden>
+          <div class="drop-zone-inner">
+            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <p>Drag &amp; drop a PDF here, or <span class="browse-link">browse</span></p>
+            <p id="file-name" class="file-name"></p>
+          </div>
+        </div>
+
+        <button type="submit" id="convert-btn" disabled>Generate Ontology</button>
+      </form>
+
+      <div id="status-bar" class="status-bar hidden"></div>
+    </section>
+
+    <!-- Editor Section (hidden until conversion succeeds) -->
+    <section id="editor-section" class="hidden">
+      <div class="editor-toolbar">
+        <h2>SKOS Knowledge Graph (RDF/XML)</h2>
+        <div class="toolbar-actions">
+          <button id="new-btn" class="btn-secondary">New Conversion</button>
+          <button id="download-btn" class="btn-primary">Download .rdf</button>
+        </div>
+      </div>
+      <div id="editor-wrapper">
+        <textarea id="turtle-editor"></textarea>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

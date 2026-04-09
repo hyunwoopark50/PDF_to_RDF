@@ -1,0 +1,9 @@
+services:
+  web:
+    build: .
+    ports:
+      - "5400:5400"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
