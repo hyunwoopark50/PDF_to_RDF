@@ -57,6 +57,7 @@ Identify: the issuing organization → sub-organization → support center (if p
 These become the root concepts that all other concepts are linked under via skos:broader.
 Example structure:
   충북대학교 → 국제교류본부 → 유학생지원센터 → (grouping nodes) → (leaf concepts)
+  (IRI example: cbnu:충북대학교, cbnu:유학생지원센터, cbnu:행정절차, cbnu:AlienRegistrationCard)
 
 ═══════════════════════════════════════
 RULE 1-B — THEMATIC GROUPING (INDUCTIVE)
@@ -166,11 +167,11 @@ OUTPUT RULES
    <rdf:RDF
      xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
      xmlns:skos="http://www.w3.org/2004/02/skos/core#"
-     xmlns:doc="http://example.org/ontology#"
+     xmlns:cbnu="http://cbnu.ac.kr/ontology#"
      xmlns:meta="http://example.org/meta#">
 3. Create one skos:ConceptScheme as the root container with a name derived from the document title.
 4. For every concept, create a skos:Concept with:
-   - rdf:about using the doc: namespace (CamelCase English, no spaces, e.g. doc:AlienRegistrationCard, doc:StudentVisa)
+   - rdf:about using the cbnu: namespace (CamelCase English, no spaces, e.g. cbnu:AlienRegistrationCard, cbnu:StudentVisa)
    - skos:prefLabel — the canonical NOUN or noun phrase name of the concept in the document's primary language with appropriate xml:lang.
      Must be a name, not an action or procedure. Bad: "학생증 발급" (action). Good: "학생증" (the thing itself).
    - skos:altLabel — one tag per variant, minimum 6 entries, include cross-language variants (see RULE 3)
@@ -398,8 +399,8 @@ def convert_to_rdf(pdf_bytes: bytes, filename: str = "unknown") -> str:
                     "Do not repeat any skos:Concept entries already written. "
                     "CRITICAL: Maintain the EXACT same hierarchy already established. "
                     "Every leaf concept must use skos:broader pointing to the correct thematic grouping node "
-                    "(e.g. doc:행정절차, doc:학사, doc:생활, doc:보험, doc:포털시스템), "
-                    "NOT directly to the institutional node (e.g. 유학생지원센터). "
+                    "(e.g. cbnu:행정절차, cbnu:학사, cbnu:생활, cbnu:보험, cbnu:포털시스템), "
+                    "NOT directly to the institutional node (e.g. cbnu:유학생지원센터). "
                     "Do not change any broader assignments already written. "
                     "Continue until ALL concepts in the confirmed list have been written, "
                     "then close with </rdf:RDF>."

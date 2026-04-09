@@ -39,20 +39,69 @@
       <div id="status-bar" class="status-bar hidden"></div>
     </section>
 
-    <!-- Editor Section (hidden until conversion succeeds) -->
-    <section id="editor-section" class="hidden">
-      <div class="editor-toolbar">
-        <h2>SKOS Knowledge Graph (RDF/XML)</h2>
-        <div class="toolbar-actions">
-          <button id="new-btn" class="btn-secondary">New Conversion</button>
-          <button id="download-btn" class="btn-primary">Download .rdf</button>
-        </div>
+    <!-- Editor Toolbar (always visible) -->
+    <div id="editor-toolbar">
+      <h2>SKOS Knowledge Graph (RDF/XML)</h2>
+      <div class="toolbar-actions">
+        <button id="new-btn" class="btn-secondary" disabled>New Conversion</button>
+        <button id="save-btn" class="btn-secondary" disabled>Save</button>
+        <button id="load-btn" class="btn-secondary">Load</button>
+        <button id="download-btn" class="btn-primary" disabled>Download .rdf</button>
       </div>
+    </div>
+
+    <!-- Editor Body (hidden until content loaded) -->
+    <div id="editor-body" class="hidden">
       <div id="editor-wrapper">
         <textarea id="turtle-editor"></textarea>
       </div>
-    </section>
+      <div id="concept-panel">
+        <div class="panel-header">
+          <span>Concepts</span>
+          <input id="concept-search" type="text" placeholder="Search...">
+        </div>
+        <ul id="concept-list"></ul>
+        <div id="label-editor" class="hidden">
+          <div class="label-editor-header">
+            <span id="editing-concept-name"></span>
+            <button id="close-label-editor">✕</button>
+          </div>
+          <div id="label-tags"></div>
+          <div class="label-add-row">
+            <input id="new-label-input" type="text" placeholder="New label...">
+            <button id="add-label-btn">Add</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
+  </div>
+
+  <!-- Load Modal -->
+  <div id="load-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Load Saved File</h3>
+        <button id="close-load-modal">✕</button>
+      </div>
+      <ul id="savefile-list"></ul>
+      <p id="savefile-empty" class="modal-empty hidden">No saved files found.</p>
+    </div>
+  </div>
+
+  <!-- Unsaved Changes Modal -->
+  <div id="unsaved-modal" class="modal-overlay hidden">
+    <div class="modal modal-confirm">
+      <div class="modal-header">
+        <h3>Unsaved Changes</h3>
+      </div>
+      <p class="modal-confirm-msg">You have unsaved changes. Save before continuing?</p>
+      <div class="modal-confirm-actions">
+        <button id="unsaved-save-btn" class="btn-primary">Save</button>
+        <button id="unsaved-discard-btn" class="btn-secondary">Discard</button>
+        <button id="unsaved-cancel-btn" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
