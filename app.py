@@ -1,7 +1,14 @@
 import io
+import logging
 from flask import Flask, render_template, request, jsonify, send_file
 from config import Config
 from converter import convert_to_rdf
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y/%m/%d %H:%M:%S",
+)
 
 if not Config.OPENAI_API_KEY:
     raise RuntimeError(
@@ -32,10 +39,12 @@ def convert():
     pdf_bytes = f.read()
 
     try:
-        rdf = convert_to_rdf(pdf_bytes)
+        rdf = convert_to_rdf(pdf_bytes, filename=f.filename)
     except ValueError as e:
+        logging.error(f"변환 오류 [{f.filename}]: {e}")
         return jsonify({"status": "error", "message": str(e)}), 422
     except RuntimeError as e:
+        logging.error(f"변환 오류 [{f.filename}]: {e}")
         return jsonify({"status": "error", "message": str(e)}), 502
 
     return jsonify({"status": "ok", "rdf": rdf})

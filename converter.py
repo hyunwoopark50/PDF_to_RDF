@@ -1,6 +1,10 @@
 import fitz  # pymupdf
+import logging
+import time
 from openai import OpenAI
 from config import Config
+
+logger = logging.getLogger(__name__)
 
 client = OpenAI(api_key=Config.OPENAI_API_KEY)
 
@@ -252,6 +256,8 @@ def _strip_chunk(chunk: str) -> str:
 # ── Pass 1: 개념 추출 ──────────────────────────────────────────────────────────
 
 def extract_concepts(text: str) -> list[str]:
+    logger.info("Pass 1 시작: 개념 추출 중...")
+    t0 = time.time()
     try:
         response = client.chat.completions.create(
             model=Config.GPT_MODEL,
@@ -266,6 +272,7 @@ def extract_concepts(text: str) -> list[str]:
             max_tokens=1500,
         )
     except Exception as e:
+        logger.error(f"Pass 1 실패: {e}")
         raise RuntimeError(f"GPT API call failed (Pass 1): {e}")
 
     raw = response.choices[0].message.content.strip()
@@ -278,24 +285,37 @@ def extract_concepts(text: str) -> list[str]:
             concepts.append(concept)
             seen.add(concept)
 
+    elapsed = time.time() - t0
+    logger.info(f"Pass 1 완료: {len(concepts)}개 개념 추출 ({elapsed:.1f}s)")
+    if len(concepts) < 15:
+        logger.warning(f"Pass 1 개념 수 부족: {len(concepts)}개 (기대치 40+)")
+
     return concepts
 
 
 # ── Pass 2: RDF 생성 ───────────────────────────────────────────────────────────
 
-def convert_to_rdf(pdf_bytes: bytes) -> str:
+def convert_to_rdf(pdf_bytes: bytes, filename: str = "unknown") -> str:
+    total_start = time.time()
+    logger.info("=" * 50)
+    logger.info(f"변환 시작: {filename}")
+    logger.info("=" * 50)
+
     text = extract_text_from_pdf(pdf_bytes)
+    logger.info(f"PDF 텍스트 추출 완료: {len(text):,}자")
 
     # Pass 1: 개념 목록 추출
     concepts = extract_concepts(text)
     if not concepts:
+        logger.error("Pass 1 결과 없음: PDF가 너무 짧거나 읽을 수 없음")
         raise RuntimeError("Pass 1 returned no concepts. PDF may be too short or unreadable.")
-    if len(concepts) < 15:
-        print(f"[Warning] Pass 1 returned only {len(concepts)} concepts. Output may be incomplete.")
 
     concept_list_str = "\n".join(f"- {c}" for c in concepts)
 
     # Pass 2: 확정 목록 기반 RDF 생성 (토큰 한계 시 자동 이어쓰기)
+    logger.info(f"Pass 2 시작: {len(concepts)}개 개념 → RDF/XML 변환 중...")
+    pass2_start = time.time()
+
     user_message = (
         "Convert the following document text into a SKOS knowledge graph in RDF/XML format.\n"
         "Follow the rules exactly.\n\n"
@@ -311,6 +331,7 @@ def convert_to_rdf(pdf_bytes: bytes) -> str:
 
     full_rdf = ""
     max_continuations = 4
+    continuation_count = 0
 
     for attempt in range(max_continuations + 1):
         try:
@@ -321,6 +342,7 @@ def convert_to_rdf(pdf_bytes: bytes) -> str:
                 max_tokens=16000,
             )
         except Exception as e:
+            logger.error(f"Pass 2 실패 (attempt {attempt + 1}): {e}")
             raise RuntimeError(f"GPT API call failed (Pass 2, attempt {attempt + 1}): {e}")
 
         chunk = response.choices[0].message.content
@@ -346,11 +368,15 @@ def convert_to_rdf(pdf_bytes: bytes) -> str:
 
         # 이어쓰기가 필요한 경우: </rdf:RDF>와 마크다운 펜스를 제거하고 붙임
         full_rdf += _strip_chunk(chunk)
+        continuation_count += 1
 
         if attempt == max_continuations:
             full_rdf += "\n</rdf:RDF>"
-            print(f"[Warning] RDF generation did not complete after {max_continuations + 1} passes. Output may be incomplete.")
+            logger.warning(f"Pass 2 미완료: {max_continuations + 1}회 시도 후에도 종료되지 않음 (출력 불완전할 수 있음)")
             break
+
+        reason = "placeholder 감지" if has_placeholder else "토큰 한도 초과"
+        logger.info(f"  └ Continuation {continuation_count}: {reason} → 이어쓰기 요청")
 
         # 이어쓰기 요청
         messages.append({"role": "assistant", "content": chunk})
@@ -379,6 +405,13 @@ def convert_to_rdf(pdf_bytes: bytes) -> str:
                     "then close with </rdf:RDF>."
                 ),
             })
+
+    pass2_elapsed = time.time() - pass2_start
+    total_elapsed = time.time() - total_start
+
+    logger.info(f"Pass 2 완료: {pass2_elapsed:.1f}s (continuation {continuation_count}회)")
+    logger.info(f"변환 완료: {filename} | 총 소요 {total_elapsed:.1f}s")
+    logger.info("=" * 50)
 
     return clean_rdf_output(full_rdf)
 
