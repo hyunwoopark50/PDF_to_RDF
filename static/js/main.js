@@ -433,14 +433,14 @@
       const lastAlt = body.lastIndexOf('</skos:altLabel>');
       if (lastAlt !== -1) {
         const pos = lastAlt + '</skos:altLabel>'.length;
-        return body.slice(0, pos) + `\n${indent}<skos:altLabel>${escapeXml(text)}</skos:altLabel>` + body.slice(pos) + closing;
+        return body.slice(0, pos) + `\n${indent}<skos:altLabel xml:lang="${detectLang(text)}">${escapeXml(text)}</skos:altLabel>` + body.slice(pos) + closing;
       }
       const lastPref = body.lastIndexOf('</skos:prefLabel>');
       if (lastPref !== -1) {
         const pos = lastPref + '</skos:prefLabel>'.length;
-        return body.slice(0, pos) + `\n${indent}<skos:altLabel>${escapeXml(text)}</skos:altLabel>` + body.slice(pos) + closing;
+        return body.slice(0, pos) + `\n${indent}<skos:altLabel xml:lang="${detectLang(text)}">${escapeXml(text)}</skos:altLabel>` + body.slice(pos) + closing;
       }
-      return `${body}${indent}<skos:altLabel>${escapeXml(text)}</skos:altLabel>\n  ${closing}`;
+      return `${body}${indent}<skos:altLabel xml:lang="${detectLang(text)}">${escapeXml(text)}</skos:altLabel>\n  ${closing}`;
     });
     const scrollInfo = editor.getScrollInfo();
     editor.setValue(newRdf);
@@ -463,6 +463,10 @@
     editor.scrollTo(scrollInfo.left, scrollInfo.top);
     const concept = findConceptByAbout(parseCurrentXml(), about);
     if (concept) renderLabelTags(about, concept);
+  }
+
+  function detectLang(text) {
+    return /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/.test(text) ? 'ko' : 'en';
   }
 
   function escapeXml(str) {
