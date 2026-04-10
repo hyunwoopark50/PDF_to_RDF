@@ -57,7 +57,7 @@ Identify: the issuing organization → sub-organization → support center (if p
 These become the root concepts that all other concepts are linked under via skos:broader.
 Example structure:
   충북대학교 → 국제교류본부 → 유학생지원센터 → (grouping nodes) → (leaf concepts)
-  (IRI example: cbnu:충북대학교, cbnu:유학생지원센터, cbnu:행정절차, cbnu:AlienRegistrationCard)
+  (IRI example: doc:충북대학교, doc:유학생지원센터, doc:행정절차, doc:AlienRegistrationCard)
 
 ═══════════════════════════════════════
 RULE 1-B — THEMATIC GROUPING (INDUCTIVE)
@@ -167,17 +167,17 @@ OUTPUT RULES
    <rdf:RDF
      xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
      xmlns:skos="http://www.w3.org/2004/02/skos/core#"
-     xmlns:cbnu="http://cbnu.ac.kr/ontology#"
+     xmlns:doc="http://example.org/ontology#"
      xmlns:meta="http://example.org/meta#">
 3. Create one skos:ConceptScheme as the root container with a name derived from the document title.
 4. For every concept, create a skos:Concept with:
-   - rdf:about using the cbnu: prefix shorthand (CamelCase English, no spaces)
-     CORRECT:   rdf:about="cbnu:AlienRegistrationCard"
-     CORRECT:   rdf:resource="cbnu:행정절차"
-     CORRECT:   skos:inScheme rdf:resource="cbnu:GuideScheme"
-     WRONG:     rdf:about="http://cbnu.ac.kr/ontology#AlienRegistrationCard"
-     WRONG:     rdf:resource="http://cbnu.ac.kr/ontology#행정절차"
-     CRITICAL: NEVER expand the cbnu: prefix to its full URI in ANY attribute value.
+   - rdf:about using the doc: prefix shorthand (CamelCase English, no spaces)
+     CORRECT:   rdf:about="doc:AlienRegistrationCard"
+     CORRECT:   rdf:resource="doc:행정절차"
+     CORRECT:   skos:inScheme rdf:resource="doc:GuideScheme"
+     WRONG:     rdf:about="http://example.org/ontology#AlienRegistrationCard"
+     WRONG:     rdf:resource="http://example.org/ontology#행정절차"
+     CRITICAL: NEVER expand the doc: prefix to its full URI in ANY attribute value.
      This applies to ALL rdf:about, rdf:resource, skos:inScheme, skos:broader, skos:narrower, skos:related attributes.
    - skos:prefLabel — the canonical NOUN or noun phrase name of the concept in the document's primary language with appropriate xml:lang.
      Must be a name, not an action or procedure. Bad: "학생증 발급" (action). Good: "학생증" (the thing itself).
@@ -201,6 +201,25 @@ OUTPUT RULES
 7. Close with </rdf:RDF>."""
 
 
+def _extract_page_text_columnar(page) -> str:
+    """다단(multi-column) 레이아웃을 열 순서대로 읽어 텍스트 반환."""
+    blocks = page.get_text("blocks")  # (x0, y0, x1, y1, text, block_no, block_type)
+    text_blocks = [b for b in blocks if b[6] == 0 and b[4].strip()]  # type 0 = text
+
+    if not text_blocks:
+        return ""
+
+    # 페이지 너비를 기준으로 좌/우 열 구분 (중앙 기준)
+    page_width = page.rect.width
+    mid = page_width / 2
+
+    left_col  = sorted([b for b in text_blocks if b[0] < mid], key=lambda b: (b[1], b[0]))
+    right_col = sorted([b for b in text_blocks if b[0] >= mid], key=lambda b: (b[1], b[0]))
+
+    parts = [b[4] for b in left_col] + [b[4] for b in right_col]
+    return "\n".join(parts)
+
+
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -212,7 +231,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
 
     pages = []
     for page in doc:
-        pages.append(page.get_text("text"))
+        pages.append(_extract_page_text_columnar(page))
     doc.close()
 
     full_text = "\n\n--- PAGE BREAK ---\n\n".join(pages).strip()
@@ -230,8 +249,17 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     return full_text
 
 
+def _fix_unescaped_ampersands(xml_str: str) -> str:
+    """
+    XML attribute값과 텍스트에서 엔터티 참조가 아닌 raw & 를 &amp;로 이스케이프.
+    &amp; &lt; &gt; &quot; &apos; &#...; 는 건드리지 않음.
+    """
+    import re
+    return re.sub(r'&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)', '&amp;', xml_str)
+
+
 def clean_rdf_output(raw: str) -> str:
-    """Strip markdown fences from a complete RDF output."""
+    """Strip markdown fences, fix unescaped & in XML."""
     raw = raw.strip()
     if raw.startswith("```"):
         lines = raw.split("\n")
@@ -240,7 +268,7 @@ def clean_rdf_output(raw: str) -> str:
         elif lines[0].strip().startswith("```"):
             lines = lines[1:]
         raw = "\n".join(lines)
-    return raw.strip()
+    return _fix_unescaped_ampersands(raw.strip())
 
 
 def _strip_chunk(chunk: str) -> str:
@@ -254,11 +282,87 @@ def _strip_chunk(chunk: str) -> str:
         elif lines[0].strip().startswith("```"):
             lines = lines[1:]
         chunk = "\n".join(lines).strip()
+    chunk = _fix_unescaped_ampersands(chunk)
     # Remove trailing </rdf:RDF> so we can append more chunks
     closing = "</rdf:RDF>"
     if chunk.endswith(closing):
         chunk = chunk[: -len(closing)].rstrip()
     return chunk
+
+
+def _extract_grouping_node_iris(rdf_text: str) -> list[str]:
+    """이미 생성된 RDF 텍스트에서 skos:narrower를 가진 grouping node의 doc: IRI를 추출."""
+    import re
+    # skos:narrower가 하나라도 있는 Concept의 rdf:about 값을 찾음
+    concept_blocks = re.findall(
+        r'<skos:Concept\s+rdf:about="(doc:[^"]+)"[^>]*>(.*?)</skos:Concept>',
+        rdf_text,
+        re.DOTALL,
+    )
+    grouping = []
+    for iri, body in concept_blocks:
+        if "<skos:narrower" in body:
+            grouping.append(iri)
+    return grouping
+
+
+def _validate_rdf_references(rdf_text: str) -> None:
+    """skos:broader/narrower로 참조된 IRI가 실제로 정의되어 있는지 확인하고 경고 로그."""
+    import re
+    defined = set(re.findall(r'<skos:Concept\s+rdf:about="(doc:[^"]+)"', rdf_text))
+    referenced = set(re.findall(r'rdf:resource="(doc:[^"]+)"', rdf_text))
+    # ConceptScheme IRI는 제외
+    scheme_iris = set(re.findall(r'<skos:ConceptScheme\s+rdf:about="(doc:[^"]+)"', rdf_text))
+    undefined = referenced - defined - scheme_iris
+    if undefined:
+        logger.warning(f"미정의 IRI 참조 감지 ({len(undefined)}개): {', '.join(sorted(undefined))}")
+
+
+def _apply_grouping_correction(
+    rdf_text: str, concept_list_str: str
+) -> str:
+    """
+    flat 구조(grouping node 없음)를 감지하면 GPT에 correction pass를 요청한다.
+    grouping node를 추가하고 leaf concept의 skos:broader를 재할당한 완전한 RDF를 반환.
+    """
+    logger.info("  └ Correction pass: flat 구조 감지 → 계층 재구성 요청")
+    correction_prompt = (
+        "The RDF you generated has a flat structure: every concept points its skos:broader "
+        "directly at the top-most root concept, with no thematic grouping nodes in between. "
+        "This is wrong.\n\n"
+        "Your task:\n"
+        "1. Look at the confirmed concept list and identify 2–6 natural thematic clusters "
+        "(e.g. by technology type, organization, output type, etc.).\n"
+        "2. Create a skos:Concept grouping node for each cluster. "
+        "Each grouping node must have: prefLabel, at least 4 altLabels, meta:source, "
+        "skos:broader pointing to the root concept, skos:narrower for each member, "
+        "and skos:inScheme.\n"
+        "3. Update every leaf concept's skos:broader to point to its grouping node, "
+        "NOT to the root concept.\n"
+        "4. Do NOT create a grouping node with fewer than 2 members.\n"
+        "5. Output the complete corrected RDF/XML from <?xml ...> to </rdf:RDF>. "
+        "Do not omit any concept. Do not use placeholder comments.\n\n"
+        f"Confirmed concept list:\n{concept_list_str}\n\n"
+        "Current (flat) RDF to fix:\n"
+        f"{rdf_text}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model=Config.GPT_MODEL,
+            messages=[
+                {"role": "system", "content": CONVERSION_SYSTEM_PROMPT},
+                {"role": "user", "content": correction_prompt},
+            ],
+            temperature=0.1,
+            max_tokens=16000,
+        )
+    except Exception as e:
+        logger.error(f"Correction pass 실패: {e}")
+        return rdf_text  # 실패 시 원본 반환
+
+    corrected = clean_rdf_output(response.choices[0].message.content)
+    logger.info("  └ Correction pass 완료")
+    return corrected
 
 
 # ── Pass 1: 개념 추출 ──────────────────────────────────────────────────────────
@@ -399,16 +503,28 @@ def convert_to_rdf(pdf_bytes: bytes, filename: str = "unknown") -> str:
                 ),
             })
         else:
+            # 이미 출력된 RDF에서 grouping node (skos:narrower를 가진 개념) IRI 추출
+            grouping_nodes = _extract_grouping_node_iris(full_rdf)
+            if grouping_nodes:
+                hierarchy_hint = (
+                    "CRITICAL: Maintain the EXACT same hierarchy already established. "
+                    f"The thematic grouping nodes already defined are: {', '.join(grouping_nodes)}. "
+                    "Every remaining leaf concept MUST use skos:broader pointing to the correct grouping node among these, "
+                    "NOT directly to the top-most institutional concept. "
+                    "Do not change any broader assignments already written. "
+                )
+            else:
+                hierarchy_hint = (
+                    "CRITICAL: Maintain the EXACT same hierarchy already established. "
+                    "Use skos:broader pointing to the correct thematic grouping node already defined, "
+                    "NOT directly to the top-most institutional concept. "
+                )
             messages.append({
                 "role": "user",
                 "content": (
                     "The output was cut off. Continue the RDF/XML exactly from where you left off. "
                     "Do not repeat any skos:Concept entries already written. "
-                    "CRITICAL: Maintain the EXACT same hierarchy already established. "
-                    "Every leaf concept must use skos:broader pointing to the correct thematic grouping node "
-                    "(e.g. cbnu:행정절차, cbnu:학사, cbnu:생활, cbnu:보험, cbnu:포털시스템), "
-                    "NOT directly to the institutional node (e.g. cbnu:유학생지원센터). "
-                    "Do not change any broader assignments already written. "
+                    + hierarchy_hint +
                     "Continue until ALL concepts in the confirmed list have been written, "
                     "then close with </rdf:RDF>."
                 ),
@@ -417,11 +533,20 @@ def convert_to_rdf(pdf_bytes: bytes, filename: str = "unknown") -> str:
     pass2_elapsed = time.time() - pass2_start
     total_elapsed = time.time() - total_start
 
+    cleaned = clean_rdf_output(full_rdf)
+
+    # flat 구조 감지: grouping node(skos:narrower를 가진 Concept)가 없으면 correction pass
+    if not _extract_grouping_node_iris(cleaned):
+        logger.warning("Pass 2 결과 flat 구조 감지: grouping node 없음 → correction pass 시작")
+        cleaned = _apply_grouping_correction(cleaned, concept_list_str)
+
+    _validate_rdf_references(cleaned)
+
     logger.info(f"Pass 2 완료: {pass2_elapsed:.1f}s (continuation {continuation_count}회)")
     logger.info(f"변환 완료: {filename} | 총 소요 {total_elapsed:.1f}s")
     logger.info("=" * 50)
 
-    return clean_rdf_output(full_rdf)
+    return cleaned
 
 
 if __name__ == "__main__":
