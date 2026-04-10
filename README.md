@@ -138,21 +138,21 @@ PDF_to_RDF/
 
 ## 출력 형식
 
-SKOS RDF/XML 형식으로 출력되며 `cbnu:` 네임스페이스를 사용합니다.
+SKOS RDF/XML 형식으로 출력되며 `doc:` 네임스페이스를 사용합니다.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <rdf:RDF
   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
   xmlns:skos="http://www.w3.org/2004/02/skos/core#"
-  xmlns:cbnu="http://cbnu.ac.kr/ontology#"
+  xmlns:doc="http://example.org/ontology#"
   xmlns:meta="http://example.org/meta#">
 
-  <skos:Concept rdf:about="cbnu:AlienRegistrationCard">
+  <skos:Concept rdf:about="doc:AlienRegistrationCard">
     <skos:prefLabel xml:lang="ko">외국인등록증</skos:prefLabel>
     <skos:altLabel xml:lang="ko">외등증</skos:altLabel>
     <skos:altLabel xml:lang="en">ARC</skos:altLabel>
-    <skos:broader rdf:resource="cbnu:행정절차"/>
+    <skos:broader rdf:resource="doc:행정절차"/>
     <meta:source>guidelines</meta:source>
   </skos:Concept>
 
