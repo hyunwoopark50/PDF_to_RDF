@@ -120,7 +120,7 @@ def save():
     filename = data.get("filename", "").strip()
     if filename:
         # whitelist: 영숫자, 한글, 공백, 하이픈, 언더스코어, 점만 허용 + .rdf 확장자 필수
-        if not re.match(r'^[\w\-. ()가-힣]+\.rdf$', filename) or '..' in filename:
+        if not filename.endswith('.rdf') or '/' in filename or '\\' in filename or '..' in filename or '\x00' in filename:
             return jsonify({"status": "error", "message": "Invalid filename."}), 400
         save_name = filename
     else:
