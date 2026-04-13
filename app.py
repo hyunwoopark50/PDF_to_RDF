@@ -160,9 +160,10 @@ def list_savefiles():
     return jsonify({"status": "ok", "files": files})
 
 
-@app.route("/savefiles/<filename>", methods=["GET"])
-def load_savefile(filename):
-    if not re.match(r'^[\w\-. ()가-힣]+\.rdf$', filename) or '..' in filename:
+@app.route("/savefiles/load", methods=["GET"])
+def load_savefile():
+    filename = request.args.get("filename", "").strip()
+    if not filename.endswith('.rdf') or '/' in filename or '\\' in filename or '..' in filename or '\x00' in filename:
         return jsonify({"status": "error", "message": "Invalid filename."}), 400
     for d in _all_save_dirs():
         file_path = os.path.join(d, filename)

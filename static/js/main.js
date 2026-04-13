@@ -342,7 +342,7 @@
   async function loadFile(filename) {
     loadModal.classList.add('hidden');
     try {
-      const resp = await fetch(`/savefiles/${encodeURIComponent(filename)}`);
+      const resp = await fetch(`/savefiles/load?filename=${encodeURIComponent(filename)}`);
       const data = await resp.json();
       if (data.status === 'ok') {
         currentStem = filename.replace(/_\d{8}_\d{6}\.rdf$/, '');
