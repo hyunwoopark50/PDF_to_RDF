@@ -216,16 +216,26 @@ def extract_concepts(text: str) -> list[str]:
 
 # ── Pass 2: RDF 생성 ───────────────────────────────────────────────────────────
 
-def convert_to_rdf(pdf_bytes: bytes, filename: str = "unknown") -> str:
+def convert_to_rdf(pdf_bytes: bytes, filename: str = "unknown", progress_cb=None) -> str:
+    """PDF를 SKOS RDF/XML로 변환한다.
+    progress_cb: 진행 단계 메시지를 전달받는 선택적 콜백 함수 (str) → None
+    """
+    def _progress(msg: str):
+        logger.info(msg)
+        if progress_cb:
+            progress_cb(msg)
+
     total_start = time.time()
     logger.info("=" * 50)
     logger.info(f"변환 시작: {filename}")
     logger.info("=" * 50)
+    _progress(f"Step 1/3: PDF 텍스트 추출 중... ({filename})")
 
     text = extract_text_from_pdf(pdf_bytes)
     logger.info(f"PDF 텍스트 추출 완료: {len(text):,}자")
 
     # Pass 1: 개념 목록 추출
+    _progress("Step 2/3: 개념 목록 추출 중... (Pass 1)")
     concepts = extract_concepts(text)
     if not concepts:
         logger.error("Pass 1 결과 없음: PDF가 너무 짧거나 읽을 수 없음")
@@ -234,6 +244,7 @@ def convert_to_rdf(pdf_bytes: bytes, filename: str = "unknown") -> str:
     concept_list_str = "\n".join(f"- {c}" for c in concepts)
 
     # Pass 2: 확정 목록 기반 RDF 생성 (토큰 한계 시 자동 이어쓰기)
+    _progress(f"Step 3/3: RDF/XML 생성 중... ({len(concepts)}개 개념, Pass 2)")
     logger.info(f"Pass 2 시작: {len(concepts)}개 개념 → RDF/XML 변환 중...")
     pass2_start = time.time()
 
@@ -282,9 +293,8 @@ def convert_to_rdf(pdf_bytes: bytes, filename: str = "unknown") -> str:
         has_placeholder = any(p in chunk.lower() for p in placeholder_patterns)
 
         if finish_reason != "length" and not has_placeholder:
-            # 정상 완료: 마크다운 펜스만 제거하고 그대로 붙임
-            # attempt > 0이면 full_rdf 중간에 붙는 것이므로 chunk 단위로 제거
-            full_rdf += clean_rdf_output(chunk) if attempt > 0 else chunk
+            # 정상 완료: 마크다운 펜스 제거 (attempt 0 포함 항상 적용)
+            full_rdf += clean_rdf_output(chunk)
             break
 
         # 이어쓰기가 필요한 경우: </rdf:RDF>와 마크다운 펜스를 제거하고 붙임
@@ -298,6 +308,7 @@ def convert_to_rdf(pdf_bytes: bytes, filename: str = "unknown") -> str:
 
         reason = "placeholder 감지" if has_placeholder else "토큰 한도 초과"
         logger.info(f"  └ Continuation {continuation_count}: {reason} → 이어쓰기 요청")
+        _progress(f"Step 3/3: RDF 이어쓰기 중... (continuation {continuation_count}, {reason})")
 
         # 이어쓰기 요청
         messages.append({"role": "assistant", "content": chunk})

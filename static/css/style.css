@@ -207,6 +207,12 @@ button {
   cursor: not-allowed;
 }
 
+/* 미저장 상태 Save 버튼 강조 */
+.btn-unsaved {
+  background: var(--warning) !important;
+  color: #000 !important;
+}
+
 /* Editor Body */
 #editor-body {
   display: flex;
@@ -496,4 +502,73 @@ button {
 /* Utility */
 .hidden {
   display: none !important;
+}
+
+/* Concept 계층 트리 들여쓰기 */
+#concept-list li[data-depth="1"] { padding-left: 1.5rem; }
+#concept-list li[data-depth="2"] { padding-left: 2.5rem; }
+#concept-list li[data-depth="3"] { padding-left: 3.5rem; }
+
+#concept-list li.is-group {
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(233, 69, 96, 0.07);
+}
+
+/* prefLabel 인라인 편집 */
+#editing-concept-name[contenteditable="true"] {
+  border-bottom: 1px dashed var(--accent);
+  outline: none;
+  cursor: text;
+}
+
+/* RDF 검증 경고 배너 */
+.validation-warning {
+  background: #3a2a00;
+  color: var(--warning);
+  border-radius: var(--radius);
+  padding: 0.6rem 1rem;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+/* 모바일 반응형 */
+@media (max-width: 768px) {
+  body {
+    padding: 1rem 0.5rem;
+  }
+
+  #editor-body {
+    flex-direction: column;
+  }
+
+  #concept-panel {
+    width: 100%;
+    max-height: 40vh;
+  }
+
+  .CodeMirror {
+    height: 45vh;
+  }
+
+  #editor-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .toolbar-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .toolbar-actions button {
+    flex: 1;
+    min-width: 80px;
+    font-size: 0.85rem;
+    padding: 0.6rem 0.8rem;
+  }
+
+  .header h1 {
+    font-size: 1.3rem;
+  }
 }

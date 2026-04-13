@@ -41,6 +41,9 @@
   let currentFilename  = null;    // filename of the currently open file (for overwrite)
   let hasContent       = false;   // true when editor has RDF loaded
   let hasUnsaved       = false;   // true when content changed since last save
+  let isConverting     = false;   // true while GPT conversion is in progress
+
+  const PAGE_TITLE = document.title;
 
   // --- State helpers ---
   function setEditorActive(active) {
@@ -53,12 +56,28 @@
     }
   }
 
+  function setConverting(converting) {
+    isConverting = converting;
+    // 변환 중 모든 주요 버튼 비활성화
+    newBtn.disabled      = converting || !hasContent;
+    saveBtn.disabled     = converting || !hasContent;
+    downloadBtn.disabled = converting || !hasContent;
+    loadBtn.disabled     = converting;
+    convertBtn.disabled  = converting;
+  }
+
   function markSaved() {
     hasUnsaved = false;
+    document.title = PAGE_TITLE;
+    saveBtn.classList.remove('btn-unsaved');
   }
 
   function markUnsaved() {
-    if (hasContent) hasUnsaved = true;
+    if (hasContent && !hasUnsaved) {
+      hasUnsaved = true;
+      document.title = '* ' + PAGE_TITLE;
+      saveBtn.classList.add('btn-unsaved');
+    }
   }
 
   // --- Unsaved changes guard ---
@@ -107,61 +126,128 @@
   dropZone.addEventListener('drop', (e) => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
-    const file = e.dataTransfer.files[0];
-    if (file) setFile(file);
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.name.toLowerCase().endsWith('.pdf'));
+    if (files.length > 0) setFiles(files);
   });
 
   fileInput.addEventListener('change', () => {
-    if (fileInput.files[0]) setFile(fileInput.files[0]);
+    const files = Array.from(fileInput.files).filter((f) => f.name.toLowerCase().endsWith('.pdf'));
+    if (files.length > 0) setFiles(files);
   });
 
-  function setFile(file) {
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setStatus('error', 'Please select a PDF file.');
-      convertBtn.disabled = true;
-      fileNameEl.textContent = '';
-      selectedFile = null;
+  let pendingFiles = [];  // 배치 변환 대기 목록
+
+  function setFiles(files) {
+    const invalidFiles = files.filter((f) => !f.name.toLowerCase().endsWith('.pdf'));
+    if (invalidFiles.length > 0) {
+      setStatus('error', 'PDF 파일만 선택할 수 있습니다.');
       return;
     }
-    selectedFile = file;
-    fileNameEl.textContent = file.name;
+    pendingFiles = files;
+    selectedFile = files[0];
+    if (files.length === 1) {
+      fileNameEl.textContent = files[0].name;
+    } else {
+      fileNameEl.textContent = `${files[0].name} 외 ${files.length - 1}개`;
+    }
     convertBtn.disabled = false;
     clearStatus();
   }
 
   // --- Convert ---
+  let currentXhr = null;  // SSE 연결 취소용
+
+  function finishConversion() {
+    currentXhr = null;
+    setConverting(false);
+    convertBtn.textContent = 'Generate Ontology';
+    convertBtn.disabled = !selectedFile;
+  }
+
   document.getElementById('upload-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    if (!selectedFile) return;
+    if (!selectedFile || isConverting) return;
 
-    convertBtn.disabled = true;
-    setStatus('loading', 'Extracting text and generating ontology... this may take 1–3 minutes.');
+    // 배치 변환: pendingFiles 전체를 순서대로 처리
+    const filesToConvert = pendingFiles.length > 0 ? [...pendingFiles] : [selectedFile];
+    const total = filesToConvert.length;
 
-    const formData = new FormData();
-    formData.append('pdf_file', selectedFile);
+    for (let idx = 0; idx < total; idx++) {
+      const file = filesToConvert[idx];
+      const prefix = total > 1 ? `[${idx + 1}/${total}] ${file.name} — ` : '';
 
-    try {
-      const resp = await fetch('/convert', { method: 'POST', body: formData });
-      const data = await resp.json();
-
-      if (data.status === 'ok') {
-        currentStem = selectedFile.name.replace(/\.pdf$/i, '');
-        currentFilename = data.saved_as || null;
-        editor.setValue(data.rdf);
-        buildConceptPanel(data.rdf);
-        setEditorActive(true);
-        markSaved();
-        setTimeout(() => editor.refresh(), 50);
-        const savedMsg = data.saved_as ? ` Saved as: ${data.saved_as}` : '';
-        setStatus('success', `Generation complete. Review and edit the result below, then download.${savedMsg}`);
-        editorBody.scrollIntoView({ behavior: 'smooth' });
-      } else {
-        setStatus('error', data.message || 'Generation failed.');
-        convertBtn.disabled = false;
-      }
-    } catch (err) {
-      setStatus('error', 'Network error: ' + err.message);
+      setConverting(true);
+      convertBtn.textContent = 'Cancel';
       convertBtn.disabled = false;
+      setStatus('loading', `${prefix}Step 1/3: PDF 텍스트 추출 중...`);
+
+      const formData = new FormData();
+      formData.append('pdf_file', file);
+
+      await new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        currentXhr = xhr;
+        xhr.open('POST', '/convert');
+        let lastIndex = 0;
+
+        xhr.onprogress = () => {
+          const text = xhr.responseText.slice(lastIndex);
+          lastIndex = xhr.responseText.length;
+          const lines = text.split('\n');
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const msg = JSON.parse(line.slice(6));
+              if (msg.type === 'progress') {
+                setStatus('loading', `${prefix}${msg.message}`);
+              } else if (msg.type === 'done') {
+                currentStem = file.name.replace(/\.pdf$/i, '');
+                currentFilename = msg.saved_as || null;
+                editor.setValue(msg.rdf);
+                buildConceptPanel(msg.rdf);
+                setEditorActive(true);
+                markSaved();
+                setTimeout(() => editor.refresh(), 50);
+                const savedMsg = msg.saved_as ? ` Saved as: ${msg.saved_as}` : '';
+                const batchMsg = total > 1 ? ` (${idx + 1}/${total} 완료)` : '';
+                setStatus('success', `Generation complete.${batchMsg}${savedMsg}`);
+                editorBody.scrollIntoView({ behavior: 'smooth' });
+                resolve();
+              } else if (msg.type === 'error') {
+                setStatus('error', `${prefix}${msg.message || 'Generation failed.'}`);
+                resolve();
+              }
+            } catch (_) { /* JSON 파싱 오류 무시 */ }
+          }
+        };
+
+        xhr.onerror = () => {
+          setStatus('error', `${prefix}Network error. Please try again.`);
+          resolve();
+        };
+
+        xhr.onabort = () => resolve();
+        xhr.send(formData);
+      });
+
+      // 취소됐으면 배치 중단
+      if (!isConverting && currentXhr === null) break;
+
+      // 마지막 파일이 아니면 다음으로 계속 (짧은 대기)
+      if (idx < total - 1) await new Promise((r) => setTimeout(r, 500));
+    }
+
+    finishConversion();
+  });
+
+  // Cancel 버튼 클릭 시 (변환 중일 때 같은 버튼)
+  convertBtn.addEventListener('click', (e) => {
+    if (isConverting && currentXhr) {
+      e.preventDefault();
+      currentXhr.abort();
+      currentXhr = null;
+      setStatus('error', 'Conversion cancelled.');
+      finishConversion();
     }
   });
 
@@ -336,20 +422,48 @@
     const xmlDoc = parser.parseFromString(rdfString, 'application/xml');
     if (xmlDoc.querySelector('parsererror')) return;
 
-    // Use namespace-aware query to correctly find skos:Concept elements
     const concepts = xmlDoc.getElementsByTagNameNS(SKOS_NS, 'Concept');
     const previousActive = activeConceptAbout;
+
+    // skos:broader 관계를 기반으로 부모→자식 맵 구성 (계층 트리)
+    const broaderMap = {};  // about → parent about
+    Array.from(concepts).forEach((concept) => {
+      const about = concept.getAttributeNS(RDF_NS, 'about') || '';
+      const broaderEls = concept.getElementsByTagNameNS(SKOS_NS, 'broader');
+      if (broaderEls.length > 0) {
+        broaderMap[about] = broaderEls[0].getAttributeNS(RDF_NS, 'resource') || '';
+      }
+    });
+
+    // 각 개념의 depth 계산
+    function getDepth(about, visited = new Set()) {
+      if (!about || !broaderMap[about] || visited.has(about)) return 0;
+      visited.add(about);
+      return 1 + getDepth(broaderMap[about], visited);
+    }
+
+    // grouping node 판별 (skos:narrower 있으면 그룹)
+    const groupIRIs = new Set();
+    Array.from(concepts).forEach((concept) => {
+      if (concept.getElementsByTagNameNS(SKOS_NS, 'narrower').length > 0) {
+        groupIRIs.add(concept.getAttributeNS(RDF_NS, 'about') || '');
+      }
+    });
 
     conceptList.innerHTML = '';
     Array.from(concepts).forEach((concept) => {
       const about = concept.getAttributeNS(RDF_NS, 'about') || '';
       const prefLabelEls = concept.getElementsByTagNameNS(SKOS_NS, 'prefLabel');
       const label = prefLabelEls.length > 0 ? prefLabelEls[0].textContent : about.split('#').pop();
+      const depth = Math.min(getDepth(about), 3);
 
       const li = document.createElement('li');
       li.textContent = label;
       li.dataset.label = label;
       li.dataset.about = about;
+      li.dataset.depth = depth;
+      if (depth > 0) li.setAttribute('data-depth', depth);
+      if (groupIRIs.has(about)) li.classList.add('is-group');
       if (about === previousActive) li.classList.add('active');
       li.addEventListener('click', () => openLabelEditor(about, label, xmlDoc));
       conceptList.appendChild(li);
@@ -365,6 +479,43 @@
         labelEditorEl.classList.remove('hidden');
       }
     }
+
+    // RDF 검증 경고 표시 (미정의 IRI 참조)
+    showValidationWarnings(xmlDoc);
+  }
+
+  function showValidationWarnings(xmlDoc) {
+    const existing = document.getElementById('validation-warning-banner');
+    if (existing) existing.remove();
+
+    const defined = new Set();
+    const referenced = new Set();
+    const schemeIRIs = new Set();
+
+    Array.from(xmlDoc.getElementsByTagNameNS(SKOS_NS, 'Concept')).forEach((c) => {
+      const about = c.getAttributeNS(RDF_NS, 'about');
+      if (about) defined.add(about);
+      ['broader', 'narrower', 'related'].forEach((rel) => {
+        Array.from(c.getElementsByTagNameNS(SKOS_NS, rel)).forEach((el) => {
+          const res = el.getAttributeNS(RDF_NS, 'resource');
+          if (res) referenced.add(res);
+        });
+      });
+    });
+    Array.from(xmlDoc.getElementsByTagNameNS(SKOS_NS, 'ConceptScheme')).forEach((s) => {
+      const about = s.getAttributeNS(RDF_NS, 'about');
+      if (about) schemeIRIs.add(about);
+    });
+
+    const undefined_iris = [...referenced].filter((iri) => !defined.has(iri) && !schemeIRIs.has(iri));
+    if (undefined_iris.length === 0) return;
+
+    const banner = document.createElement('div');
+    banner.id = 'validation-warning-banner';
+    banner.className = 'validation-warning';
+    banner.textContent = `⚠ 미정의 IRI 참조 ${undefined_iris.length}개: ${undefined_iris.slice(0, 3).join(', ')}${undefined_iris.length > 3 ? ' ...' : ''}`;
+    const conceptPanel = document.getElementById('concept-panel');
+    conceptPanel.insertAdjacentElement('beforebegin', banner);
   }
 
   function findConceptByAbout(xmlDoc, about) {
@@ -375,6 +526,21 @@
   function openLabelEditor(about, label, xmlDoc) {
     activeConceptAbout = about;
     editingConceptName.textContent = label;
+    editingConceptName.contentEditable = 'true';
+    editingConceptName.title = '클릭하여 prefLabel 편집';
+
+    // prefLabel 인라인 편집: blur 시 XML에 반영
+    editingConceptName.onblur = () => {
+      const newLabel = editingConceptName.textContent.trim();
+      if (!newLabel || newLabel === label) return;
+      updatePrefLabel(about, label, newLabel);
+      label = newLabel;
+    };
+    editingConceptName.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); editingConceptName.blur(); }
+      if (e.key === 'Escape') { editingConceptName.textContent = label; editingConceptName.blur(); }
+    };
+
     conceptList.querySelectorAll('li').forEach((li) => {
       li.classList.toggle('active', li.dataset.about === about);
     });
@@ -385,6 +551,26 @@
     renderLabelTags(about, concept);
     labelEditorEl.classList.remove('hidden');
     scrollEditorToConcept(about);
+  }
+
+  function updatePrefLabel(about, oldLabel, newLabel) {
+    const rdf = editor.getValue();
+    const escapedAbout = about.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedOld = escapeXml(oldLabel).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(
+      `(rdf:about="${escapedAbout}"[\\s\\S]*?<skos:prefLabel(?:\\s[^>]*)?>)${escapedOld}(</skos:prefLabel>)`
+    );
+    if (!regex.test(rdf)) return;
+    const scrollInfo = editor.getScrollInfo();
+    editor.setValue(rdf.replace(regex, `$1${escapeXml(newLabel)}$2`));
+    editor.scrollTo(scrollInfo.left, scrollInfo.top);
+    // 개념 목록의 레이블도 업데이트
+    conceptList.querySelectorAll('li').forEach((li) => {
+      if (li.dataset.about === about) {
+        li.textContent = newLabel;
+        li.dataset.label = newLabel;
+      }
+    });
   }
 
   function scrollEditorToConcept(about) {
@@ -495,4 +681,75 @@
     statusBar.className = 'status-bar hidden';
     statusBar.textContent = '';
   }
+
+  // --- 키보드 단축키 ---
+  document.addEventListener('keydown', async (e) => {
+    // ESC: 열린 모달 닫기
+    if (e.key === 'Escape') {
+      if (!loadModal.classList.contains('hidden')) {
+        loadModal.classList.add('hidden');
+      } else if (!unsavedModal.classList.contains('hidden')) {
+        unsavedModal.classList.add('hidden');
+      } else if (!labelEditorEl.classList.contains('hidden')) {
+        labelEditorEl.classList.add('hidden');
+        activeConceptAbout = null;
+        conceptList.querySelectorAll('li.active').forEach((li) => li.classList.remove('active'));
+      }
+    }
+
+    // Ctrl+S / Cmd+S: 저장
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+      e.preventDefault();
+      if (hasContent && !isConverting) await doSave();
+    }
+
+    // Ctrl+Enter / Cmd+Enter: 변환 시작
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      if (selectedFile && !isConverting) {
+        document.getElementById('upload-form').requestSubmit();
+      }
+    }
+  });
+
+  // --- localStorage 자동 저장 (30초 주기) ---
+  const AUTOSAVE_KEY = 'pdf_to_rdf_autosave';
+
+  setInterval(() => {
+    if (hasContent && hasUnsaved) {
+      const rdf = editor.getValue();
+      try {
+        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({
+          rdf,
+          stem: currentStem,
+          filename: currentFilename,
+          savedAt: new Date().toISOString(),
+        }));
+      } catch (_) { /* localStorage 용량 초과 등 무시 */ }
+    }
+  }, 30000);
+
+  // 페이지 로드 시 자동 저장 복구 확인
+  (function checkAutosave() {
+    try {
+      const raw = localStorage.getItem(AUTOSAVE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (!saved.rdf) return;
+      const savedAt = new Date(saved.savedAt).toLocaleString();
+      const restore = confirm(`자동 저장된 내용이 있습니다. (${savedAt})\n복구하시겠습니까?`);
+      if (restore) {
+        currentStem = saved.stem || 'ontology';
+        currentFilename = saved.filename || null;
+        editor.setValue(saved.rdf);
+        buildConceptPanel(saved.rdf);
+        setEditorActive(true);
+        markUnsaved();
+        setTimeout(() => editor.refresh(), 50);
+        setStatus('success', `자동 저장 복구 완료 (${savedAt})`);
+        editorBody.scrollIntoView({ behavior: 'smooth' });
+      }
+      localStorage.removeItem(AUTOSAVE_KEY);
+    } catch (_) { /* 무시 */ }
+  })();
 })();

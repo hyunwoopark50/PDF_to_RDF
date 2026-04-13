@@ -1,8 +1,12 @@
 import io
 import os
+import re
+import json
+import queue
+import threading
 import datetime
 import logging
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, Response, stream_with_context
 from config import Config
 from converter import convert_to_rdf
 
@@ -39,27 +43,56 @@ def convert():
         return jsonify({"status": "error", "message": "File must be a PDF."}), 400
 
     pdf_bytes = f.read()
+    original_filename = f.filename
 
-    try:
-        rdf = convert_to_rdf(pdf_bytes, filename=f.filename)
-    except ValueError as e:
-        logging.error(f"변환 오류 [{f.filename}]: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 422
-    except RuntimeError as e:
-        logging.error(f"변환 오류 [{f.filename}]: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 502
+    # SSE 스트리밍으로 진행 단계를 실시간 전달
+    msg_queue = queue.Queue()
 
-    os.makedirs(Config.SAVEFILE_DIR, exist_ok=True)
-    stem = os.path.splitext(f.filename)[0]
-    KST = datetime.timezone(datetime.timedelta(hours=9))
-    ts = datetime.datetime.now(KST).strftime("%Y%m%d_%H%M%S")
-    save_name = f"{stem}_{ts}.rdf"
-    save_path = os.path.join(Config.SAVEFILE_DIR, save_name)
-    with open(save_path, "w", encoding="utf-8") as out:
-        out.write(rdf)
-    logging.info(f"RDF 저장 완료: {save_path}")
+    def run_conversion():
+        try:
+            rdf = convert_to_rdf(pdf_bytes, filename=original_filename,
+                                  progress_cb=lambda step: msg_queue.put(("progress", step)))
+        except ValueError as e:
+            logging.error(f"변환 오류 [{original_filename}]: {e}")
+            msg_queue.put(("error", str(e)))
+            return
+        except RuntimeError as e:
+            logging.error(f"변환 오류 [{original_filename}]: {e}")
+            msg_queue.put(("error", str(e)))
+            return
 
-    return jsonify({"status": "ok", "rdf": rdf, "saved_as": save_name})
+        os.makedirs(Config.SAVEFILE_DIR, exist_ok=True)
+        stem = os.path.splitext(original_filename)[0]
+        KST = datetime.timezone(datetime.timedelta(hours=9))
+        ts = datetime.datetime.now(KST).strftime("%Y%m%d_%H%M%S")
+        save_name = f"{stem}_{ts}.rdf"
+        save_path = os.path.join(Config.SAVEFILE_DIR, save_name)
+        with open(save_path, "w", encoding="utf-8") as out:
+            out.write(rdf)
+        logging.info(f"RDF 저장 완료: {save_path}")
+        msg_queue.put(("done", {"rdf": rdf, "saved_as": save_name}))
+
+    t = threading.Thread(target=run_conversion, daemon=True)
+    t.start()
+
+    def generate():
+        while True:
+            try:
+                kind, payload = msg_queue.get(timeout=300)
+            except queue.Empty:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Conversion timed out.'})}\n\n"
+                break
+            if kind == "progress":
+                yield f"data: {json.dumps({'type': 'progress', 'message': payload})}\n\n"
+            elif kind == "done":
+                yield f"data: {json.dumps({'type': 'done', **payload})}\n\n"
+                break
+            elif kind == "error":
+                yield f"data: {json.dumps({'type': 'error', 'message': payload})}\n\n"
+                break
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
 @app.route("/download", methods=["POST"])
@@ -86,8 +119,8 @@ def save():
 
     filename = data.get("filename", "").strip()
     if filename:
-        # Overwrite existing file — sanitize to prevent path traversal
-        if "/" in filename or "\\" in filename or ".." in filename:
+        # whitelist: 영숫자, 한글, 공백, 하이픈, 언더스코어, 점만 허용 + .rdf 확장자 필수
+        if not re.match(r'^[\w\-. ()가-힣]+\.rdf$', filename) or '..' in filename:
             return jsonify({"status": "error", "message": "Invalid filename."}), 400
         save_name = filename
     else:
@@ -129,7 +162,7 @@ def list_savefiles():
 
 @app.route("/savefiles/<filename>", methods=["GET"])
 def load_savefile(filename):
-    if "/" in filename or "\\" in filename or ".." in filename:
+    if not re.match(r'^[\w\-. ()가-힣]+\.rdf$', filename) or '..' in filename:
         return jsonify({"status": "error", "message": "Invalid filename."}), 400
     for d in _all_save_dirs():
         file_path = os.path.join(d, filename)
