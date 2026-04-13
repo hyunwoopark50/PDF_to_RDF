@@ -189,35 +189,54 @@
         currentXhr = xhr;
         xhr.open('POST', '/convert');
         let lastIndex = 0;
+        let lineBuffer = '';  // 여러 onprogress에 걸쳐 분할된 라인 누적
+        let resolved = false;
+
+        function handleMsg(msg) {
+          if (resolved) return;
+          if (msg.type === 'progress') {
+            setStatus('loading', `${prefix}${msg.message}`);
+          } else if (msg.type === 'done') {
+            resolved = true;
+            currentStem = file.name.replace(/\.pdf$/i, '');
+            currentFilename = msg.saved_as || null;
+            editor.setValue(msg.rdf);
+            buildConceptPanel(msg.rdf);
+            setEditorActive(true);
+            markSaved();
+            setTimeout(() => editor.refresh(), 50);
+            const savedMsg = msg.saved_as ? ` Saved as: ${msg.saved_as}` : '';
+            const batchMsg = total > 1 ? ` (${idx + 1}/${total} 완료)` : '';
+            setStatus('success', `Generation complete.${batchMsg}${savedMsg}`);
+            editorBody.scrollIntoView({ behavior: 'smooth' });
+            resolve();
+          } else if (msg.type === 'error') {
+            resolved = true;
+            setStatus('error', `${prefix}${msg.message || 'Generation failed.'}`);
+            resolve();
+          }
+        }
 
         xhr.onprogress = () => {
-          const text = xhr.responseText.slice(lastIndex);
+          lineBuffer += xhr.responseText.slice(lastIndex);
           lastIndex = xhr.responseText.length;
-          const lines = text.split('\n');
+          // 완전한 라인(\n으로 끝나는)만 처리, 나머지는 버퍼에 보존
+          const lines = lineBuffer.split('\n');
+          lineBuffer = lines.pop();  // 마지막 불완전 라인은 버퍼에 유지
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue;
-            try {
-              const msg = JSON.parse(line.slice(6));
-              if (msg.type === 'progress') {
-                setStatus('loading', `${prefix}${msg.message}`);
-              } else if (msg.type === 'done') {
-                currentStem = file.name.replace(/\.pdf$/i, '');
-                currentFilename = msg.saved_as || null;
-                editor.setValue(msg.rdf);
-                buildConceptPanel(msg.rdf);
-                setEditorActive(true);
-                markSaved();
-                setTimeout(() => editor.refresh(), 50);
-                const savedMsg = msg.saved_as ? ` Saved as: ${msg.saved_as}` : '';
-                const batchMsg = total > 1 ? ` (${idx + 1}/${total} 완료)` : '';
-                setStatus('success', `Generation complete.${batchMsg}${savedMsg}`);
-                editorBody.scrollIntoView({ behavior: 'smooth' });
-                resolve();
-              } else if (msg.type === 'error') {
-                setStatus('error', `${prefix}${msg.message || 'Generation failed.'}`);
-                resolve();
-              }
-            } catch (_) { /* JSON 파싱 오류 무시 */ }
+            try { handleMsg(JSON.parse(line.slice(6))); } catch (_) {}
+          }
+        };
+
+        xhr.onload = () => {
+          // 스트림 종료 시 버퍼에 남은 데이터 처리
+          if (lineBuffer.startsWith('data: ')) {
+            try { handleMsg(JSON.parse(lineBuffer.slice(6))); } catch (_) {}
+          }
+          if (!resolved) {
+            setStatus('error', `${prefix}Generation failed (no response).`);
+            resolve();
           }
         };
 
