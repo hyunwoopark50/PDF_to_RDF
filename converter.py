@@ -115,8 +115,9 @@ def _extract_grouping_node_iris(rdf_text: str) -> list[str]:
     return grouping
 
 
-def _validate_rdf_references(rdf_text: str) -> None:
-    """skos:broader/narrower로 참조된 IRI가 실제로 정의되어 있는지 확인하고 경고 로그."""
+def _validate_rdf_references(rdf_text: str) -> list[str]:
+    """skos:broader/narrower로 참조된 IRI가 실제로 정의되어 있는지 확인하고 경고 로그.
+    미정의 IRI 목록을 반환한다."""
     import re
     defined = set(re.findall(r'<skos:Concept\s+rdf:about="(doc:[^"]+)"', rdf_text))
     referenced = set(re.findall(r'rdf:resource="(doc:[^"]+)"', rdf_text))
@@ -125,6 +126,41 @@ def _validate_rdf_references(rdf_text: str) -> None:
     undefined = referenced - defined - scheme_iris
     if undefined:
         logger.warning(f"미정의 IRI 참조 감지 ({len(undefined)}개): {', '.join(sorted(undefined))}")
+    return sorted(undefined)
+
+
+def _fix_undefined_iris(rdf_text: str, undefined_iris: list[str], concept_list_str: str) -> str:
+    """미정의 IRI에 대한 skos:Concept 블록을 GPT에게 추가 생성 요청."""
+    logger.info(f"  └ Undefined IRI fix pass: {', '.join(undefined_iris)}")
+    prompt = (
+        "The following IRIs are referenced in the RDF via skos:broader or skos:narrower "
+        "but have no corresponding skos:Concept definition:\n"
+        + "\n".join(f"  - {iri}" for iri in undefined_iris)
+        + "\n\nFor each missing IRI, insert a complete skos:Concept block with: "
+        "prefLabel (ko + en), at least 2 altLabels, meta:source, skos:broader pointing to its "
+        "parent grouping node, and skos:inScheme. "
+        "Do NOT remove or change any existing concepts. "
+        "Output the complete corrected RDF from <?xml ...> to </rdf:RDF>.\n\n"
+        f"Confirmed concept list:\n{concept_list_str}\n\n"
+        f"Current RDF:\n{rdf_text}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model=Config.GPT_MODEL,
+            messages=[
+                {"role": "system", "content": CONVERSION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=16000,
+        )
+    except Exception as e:
+        logger.error(f"Undefined IRI fix pass 실패: {e}")
+        return rdf_text  # 실패 시 원본 반환
+
+    fixed = clean_rdf_output(response.choices[0].message.content)
+    logger.info("  └ Undefined IRI fix pass 완료")
+    return fixed
 
 
 def _apply_grouping_correction(
@@ -360,7 +396,15 @@ def convert_to_rdf(pdf_bytes: bytes, filename: str = "unknown", progress_cb=None
         logger.warning("Pass 2 결과 flat 구조 감지: grouping node 없음 → correction pass 시작")
         cleaned = _apply_grouping_correction(cleaned, concept_list_str)
 
-    _validate_rdf_references(cleaned)
+    undefined = _validate_rdf_references(cleaned)
+    if undefined:
+        logger.warning(f"미정의 IRI {len(undefined)}개 감지 → 자동 수정 패스 시작")
+        _progress(f"Step 3/3: 미정의 IRI {len(undefined)}개 자동 수정 중...")
+        cleaned = _fix_undefined_iris(cleaned, undefined, concept_list_str)
+        # 수정 후 재검증
+        still_undefined = _validate_rdf_references(cleaned)
+        if still_undefined:
+            logger.warning(f"자동 수정 후에도 미정의 IRI 잔존: {', '.join(still_undefined)}")
 
     logger.info(f"Pass 2 완료: {pass2_elapsed:.1f}s (continuation {continuation_count}회)")
     logger.info(f"변환 완료: {filename} | 총 소요 {total_elapsed:.1f}s")
